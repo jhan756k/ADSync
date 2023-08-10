@@ -1,18 +1,66 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
+import serial.tools.list_ports
+import serial , time, sys
+from PyQt5.QtCore import pyqtSignal
+import sounddevice as sd
+import numpy as np
 
 filename = ""
 filepath = ""
 comnum = 0
+recording = False
+ports = list(serial.tools.list_ports.comports())
 
-class Thread1(QtCore.QThread):
+for p in ports:
+    if "Arduino" in p.description:
+        comnum = p.device[3:]
+        ser = serial.Serial(p.device, 9600, timeout=1)
 
+def errorHandler(exctype, value, traceback):
+    print(exctype, value, traceback)
+    
+sys.excepthook = errorHandler
+
+class ADThread(QtCore.QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
 
     def run(self):
-        pass
+        global ser
+        while True:
+            inp = ser.readline().decode('utf-8')
+            print(inp)
 
+class SoundThread(QtCore.QThread):
+    db_updated = pyqtSignal(float)
 
+    def __init__(self, sample_rate=44100, block_size=1024):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.block_size = block_size
+        self.running = False
+
+    def calculate_db(self, audio_data):
+        rms = np.sqrt(np.mean(np.square(audio_data)))
+        db = 20 * np.log10(rms)
+        return db
+
+    def callback(self, indata, frames, time, status):
+        if status:
+            print("Error:", status)
+        db_level = self.calculate_db(indata)
+        self.db_updated.emit(db_level)
+
+    def run(self):
+        with sd.InputStream(callback=self.callback, channels=1, samplerate=self.sample_rate, blocksize=self.block_size):
+            self.running = True
+            while self.running:
+                pass
+
+    def stop(self):
+        self.running = False
+        self.wait()
+        
 class Ui_MainWindow(object):
     
     def setupUi(self, MainWindow):
@@ -98,6 +146,7 @@ class Ui_MainWindow(object):
         self.PortSpinBox.setFont(font)
         self.PortSpinBox.setButtonSymbols(QtWidgets.QAbstractSpinBox.UpDownArrows)
         self.PortSpinBox.setObjectName("PortSpinBox")
+        self.PortSpinBox.setValue(int(comnum))
         self.horizontalLayout_2.addWidget(self.PortSpinBox)
         spacerItem = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.horizontalLayout_2.addItem(spacerItem)
@@ -138,13 +187,15 @@ class Ui_MainWindow(object):
         self.RecordButton.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         self.RecordButton.setText("")
         icon = QtGui.QIcon()
-        icon.addPixmap(QtGui.QPixmap("../사진/startrecode.png"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        icon.addPixmap(QtGui.QPixmap("./icons/startrecord.png"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
         self.RecordButton.setIcon(icon)
         self.RecordButton.setIconSize(QtCore.QSize(50, 50))
         self.RecordButton.setAutoDefault(False)
         self.RecordButton.setDefault(False)
         self.RecordButton.setFlat(False)
         self.RecordButton.setObjectName("RecordButton")
+        self.RecordButton.setStyleSheet("background-color: rgb(255, 255, 255);")
+        self.RecordButton.clicked.connect(self.recordClick)
         self.horizontalLayout.addWidget(self.RecordButton)
         self.label = QtWidgets.QLabel(self.verticalLayoutWidget_2)
         font = QtGui.QFont()
@@ -181,9 +232,9 @@ class Ui_MainWindow(object):
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
-        x = Thread1(MainWindow)
-        x.start()
-
+        self.ShowGraphLabel.setPixmap(QtGui.QPixmap("./icons/test.png"))
+        self.ShowGraphLabel.setScaledContents(True)
+        
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "ADSync - made by Jooney Han"))
@@ -200,15 +251,41 @@ class Ui_MainWindow(object):
         self.FilePath.setText(QtWidgets.QFileDialog.getExistingDirectory(self.centralwidget, 'Select Directory'))
     
     def save(self):
-        global filename, filepath, comnum
+        global filename, filepath, comnum, ser
         filename = self.FilenameLineEdit.text()
         filepath = self.FilePath.text()
         comnum = self.PortSpinBox.value()
+        ser = serial.Serial('COM'+str(comnum), 9600, timeout=1)
 
+    def recordClick(self):
+        global ser, filename, filepath, recording 
+        if recording == False:
+            ser.flushInput()
+            self.RecordButton.setIcon(QtGui.QIcon("./icons/stoprecord.png"))
+            self.StartRecordLabel.setText("녹음 중...")
+            recording = True
+            self.thread1 = ADThread()
+            self.thread1.start()
+            self.start_listening()
+        else:
+            self.RecordButton.setIcon(QtGui.QIcon("./icons/startrecord.png"))
+            self.StartRecordLabel.setText("녹음 시작:")
+            recording = False
+            self.thread1.terminate()
+            self.stop_listening()
 
+    def start_listening(self):
+        self.sound_meter_thread = SoundThread()
+        self.sound_meter_thread.db_updated.connect(self.update_db_label)
+        self.sound_meter_thread.start()  # Start the thread
 
+    def update_db_label(self, db_level):
+        print(f"Current dB level: {db_level:.2f} dB")
+
+    def stop_listening(self):
+        self.sound_meter_thread.stop()
+            
 if __name__ == "__main__":
-    import sys
     app = QtWidgets.QApplication(sys.argv)
     MainWindow = QtWidgets.QMainWindow()
     ui = Ui_MainWindow()
