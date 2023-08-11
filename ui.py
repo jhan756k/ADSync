@@ -2,8 +2,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import serial.tools.list_ports
 import serial , time, sys
 from PyQt5.QtCore import pyqtSignal
-import sounddevice as sd
 import numpy as np
+import sounddevice as sd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 filename = ""
 filepath = ""
@@ -20,6 +22,23 @@ def errorHandler(exctype, value, traceback):
     print(exctype, value, traceback)
     
 sys.excepthook = errorHandler
+class GraphWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.figure = plt.figure()
+        self.canvas = FigureCanvas(self.figure)
+        self.layout = QtWidgets.QVBoxLayout(self)
+        self.layout.addWidget(self.canvas)
+
+    def plot_graph(self, times, db_levels):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.plot(times, db_levels)
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Decibels (dB)')
+        ax.set_title('Time to Decibel Graph')
+        self.figure.tight_layout()
+        self.canvas.draw()
 
 class ADThread(QtCore.QThread):
     def __init__(self, parent=None):
@@ -33,25 +52,32 @@ class ADThread(QtCore.QThread):
 
 class SoundThread(QtCore.QThread):
     db_updated = pyqtSignal(float)
+    graph_updated = pyqtSignal(list, list)
 
-    def __init__(self, sample_rate=44100, block_size=1024):
+    def __init__(self, sample_rate=44100, block_size=1024, interval=0.2):
         super().__init__()
         self.sample_rate = sample_rate
         self.block_size = block_size
         self.running = False
+        self.interval = interval
+        self.audio_data = []
 
     def calculate_db(self, audio_data):
         rms = np.sqrt(np.mean(np.square(audio_data)))
         db = 20 * np.log10(rms)
         return db
 
-    def callback(self, indata, frames, time, status):
+    def callback(self, indata, frames, timestamp, status):
         if status:
             print("Error:", status)
         db_level = self.calculate_db(indata)
         self.db_updated.emit(db_level)
+        elapsed_time = time.time() - self.start_time
+        self.audio_data.append((elapsed_time, db_level))
 
     def run(self):
+        self.audio_data = []
+        self.start_time = time.time()
         with sd.InputStream(callback=self.callback, channels=1, samplerate=self.sample_rate, blocksize=self.block_size):
             self.running = True
             while self.running:
@@ -60,6 +86,10 @@ class SoundThread(QtCore.QThread):
     def stop(self):
         self.running = False
         self.wait()
+
+        if self.audio_data:
+            times, db_levels = zip(*self.audio_data)
+            self.graph_updated.emit(list(times), list(db_levels))
         
 class Ui_MainWindow(object):
     
@@ -70,7 +100,6 @@ class Ui_MainWindow(object):
         MainWindow.setMaximumSize(QtCore.QSize(480, 640))
         MainWindow.setMouseTracking(False)
         MainWindow.setAutoFillBackground(False)
-        MainWindow.setStyleSheet("")
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         self.verticalLayoutWidget = QtWidgets.QWidget(self.centralwidget)
@@ -221,20 +250,14 @@ class Ui_MainWindow(object):
         self.line_2.setFrameShadow(QtWidgets.QFrame.Sunken)
         self.line_2.setObjectName("line_2")
         self.verticalLayout_2.addWidget(self.line_2)
-        self.ShowGraphLabel = QtWidgets.QLabel(self.centralwidget)
-        self.ShowGraphLabel.setGeometry(QtCore.QRect(10, 150, 461, 231))
-        self.ShowGraphLabel.setContextMenuPolicy(QtCore.Qt.DefaultContextMenu)
-        self.ShowGraphLabel.setText("")
-        self.ShowGraphLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.ShowGraphLabel = GraphWidget(self.centralwidget)
+        self.ShowGraphLabel.setGeometry(QtCore.QRect(0, 135, 480, 270))
         self.ShowGraphLabel.setObjectName("ShowGraphLabel")
         MainWindow.setCentralWidget(self.centralwidget)
 
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
-        self.ShowGraphLabel.setPixmap(QtGui.QPixmap("./icons/test.png"))
-        self.ShowGraphLabel.setScaledContents(True)
-        
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "ADSync - made by Jooney Han"))
@@ -260,11 +283,11 @@ class Ui_MainWindow(object):
     def recordClick(self):
         global ser, filename, filepath, recording 
         if recording == False:
-            ser.flushInput()
             self.RecordButton.setIcon(QtGui.QIcon("./icons/stoprecord.png"))
             self.StartRecordLabel.setText("녹음 중...")
             recording = True
             self.thread1 = ADThread()
+            ser.flushInput()
             self.thread1.start()
             self.start_listening()
         else:
@@ -276,6 +299,7 @@ class Ui_MainWindow(object):
 
     def start_listening(self):
         self.sound_meter_thread = SoundThread()
+        self.sound_meter_thread.graph_updated.connect(self.show_graph)
         self.sound_meter_thread.db_updated.connect(self.update_db_label)
         self.sound_meter_thread.start()  # Start the thread
 
@@ -284,6 +308,9 @@ class Ui_MainWindow(object):
 
     def stop_listening(self):
         self.sound_meter_thread.stop()
+
+    def show_graph(self, times, db_levels):
+        self.ShowGraphLabel.plot_graph(times, db_levels)
             
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
