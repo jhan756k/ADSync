@@ -1,6 +1,6 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 import serial.tools.list_ports
-import serial , time, sys
+import serial , time, sys, glob, platform, os
 from PyQt5.QtCore import pyqtSignal
 import numpy as np
 import sounddevice as sd
@@ -9,19 +9,14 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 filename = ""
 filepath = ""
-comnum = 0
+portname = ""
 recording = False
-ports = list(serial.tools.list_ports.comports())
-
-for p in ports:
-    if "Arduino" in p.description:
-        comnum = p.device[3:]
-        ser = serial.Serial(p.device, 9600, timeout=1)
 
 def errorHandler(exctype, value, traceback):
     print(exctype, value, traceback)
     
 sys.excepthook = errorHandler
+
 class GraphWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,7 +29,7 @@ class GraphWidget(QtWidgets.QWidget):
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.plot(times, db_levels)
-        ax.set_xlabel('Time')
+        ax.set_xlabel('Time (Seconds)')
         ax.set_ylabel('Decibels (dB)')
         ax.set_title('Time to Decibel Graph')
         self.figure.tight_layout()
@@ -51,16 +46,16 @@ class ADThread(QtCore.QThread):
             print(inp)
 
 class SoundThread(QtCore.QThread):
-    db_updated = pyqtSignal(float)
     graph_updated = pyqtSignal(list, list)
 
-    def __init__(self, sample_rate=44100, block_size=1024, interval=0.2):
+    def __init__(self, sample_rate=44100, block_size=1024):
         super().__init__()
         self.sample_rate = sample_rate
         self.block_size = block_size
         self.running = False
-        self.interval = interval
-        self.audio_data = []
+        self.db_levels = []
+        self.times = []
+        self.pressure_levels = []
 
     def calculate_db(self, audio_data):
         rms = np.sqrt(np.mean(np.square(audio_data)))
@@ -71,28 +66,29 @@ class SoundThread(QtCore.QThread):
         if status:
             print("Error:", status)
         db_level = self.calculate_db(indata)
-        self.db_updated.emit(db_level)
+        print(db_level)
         elapsed_time = time.time() - self.start_time
-        self.audio_data.append((elapsed_time, db_level))
+        self.db_levels.append(db_level)
+        self.times.append(elapsed_time)
+        # self.pressure_levels.append()
 
     def run(self):
-        self.audio_data = []
         self.start_time = time.time()
         with sd.InputStream(callback=self.callback, channels=1, samplerate=self.sample_rate, blocksize=self.block_size):
-            self.running = True
+            self.running = True 
             while self.running:
                 pass
 
     def stop(self):
         self.running = False
         self.wait()
+        self.emit_graph()
 
-        if self.audio_data:
-            times, db_levels = zip(*self.audio_data)
-            self.graph_updated.emit(list(times), list(db_levels))
-        
+    def emit_graph(self):
+        self.graph_updated.emit(list(self.times), list(self.db_levels))
+
 class Ui_MainWindow(object):
-    
+
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(480, 640)
@@ -167,16 +163,14 @@ class Ui_MainWindow(object):
         self.PortLabel.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
         self.PortLabel.setObjectName("PortLabel")
         self.horizontalLayout_2.addWidget(self.PortLabel)
-        self.PortSpinBox = QtWidgets.QSpinBox(self.verticalLayoutWidget)
-        self.PortSpinBox.setMaximumSize(QtCore.QSize(16777215, 16777215))
+        self.PortDropDown = QtWidgets.QComboBox(self.verticalLayoutWidget)
+        self.PortDropDown.setMinimumSize(QtCore.QSize(305, 35))
         font = QtGui.QFont()
         font.setFamily("AppleSDGothicNeoB00")
         font.setPointSize(14)
-        self.PortSpinBox.setFont(font)
-        self.PortSpinBox.setButtonSymbols(QtWidgets.QAbstractSpinBox.UpDownArrows)
-        self.PortSpinBox.setObjectName("PortSpinBox")
-        self.PortSpinBox.setValue(int(comnum))
-        self.horizontalLayout_2.addWidget(self.PortSpinBox)
+        self.PortDropDown.setFont(font)
+        self.PortDropDown.setObjectName("ComPortDropDown")
+        self.horizontalLayout_2.addWidget(self.PortDropDown)
         spacerItem = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.horizontalLayout_2.addItem(spacerItem)
         self.SaveButton = QtWidgets.QPushButton(self.verticalLayoutWidget)
@@ -258,6 +252,18 @@ class Ui_MainWindow(object):
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
+        if platform.system() == 'Windows':
+            ports = list(serial.tools.list_ports.comports())
+            for p in ports:
+                self.PortDropDown.addItem(str(p.device))
+        elif platform.system() == 'Darwin':
+            ports = glob.glob('/dev/tty.*')
+            for p in ports:
+                self.PortDropDown.addItem(str(p))
+        else:
+            print("Unsupported OS")
+            sys.exit()
+
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "ADSync - made by Jooney Han"))
@@ -265,7 +271,7 @@ class Ui_MainWindow(object):
         self.GetFileDiagButton.setText(_translate("MainWindow", "폴더 선택"))
         self.FilePath.setText(_translate("MainWindow", "file path"))
         self.PressureLabel.setText(_translate("MainWindow", "파일 저장 이름:"))
-        self.PortLabel.setText(_translate("MainWindow", "포트번호: COM"))
+        self.PortLabel.setText(_translate("MainWindow", "포트: "))
         self.SaveButton.setText(_translate("MainWindow", "저장"))
         self.StartRecordLabel.setText(_translate("MainWindow", "녹음 시작:"))
         self.label.setText(_translate("MainWindow", "저장됨! "))
@@ -274,11 +280,11 @@ class Ui_MainWindow(object):
         self.FilePath.setText(QtWidgets.QFileDialog.getExistingDirectory(self.centralwidget, 'Select Directory'))
     
     def save(self):
-        global filename, filepath, comnum, ser
+        global filename, filepath, portname, ser
         filename = self.FilenameLineEdit.text()
         filepath = self.FilePath.text()
-        comnum = self.PortSpinBox.value()
-        ser = serial.Serial('COM'+str(comnum), 9600, timeout=1)
+        portname = self.PortDropDown.currentText()
+        ser = serial.Serial(portname, 9600, timeout=1)
 
     def recordClick(self):
         global ser, filename, filepath, recording 
@@ -300,18 +306,18 @@ class Ui_MainWindow(object):
     def start_listening(self):
         self.sound_meter_thread = SoundThread()
         self.sound_meter_thread.graph_updated.connect(self.show_graph)
-        self.sound_meter_thread.db_updated.connect(self.update_db_label)
-        self.sound_meter_thread.start()  # Start the thread
-
-    def update_db_label(self, db_level):
-        print(f"Current dB level: {db_level:.2f} dB")
+        # self.update_timer = QtCore.QTimer()
+        # self.update_timer.timeout.connect(self.sound_meter_thread.emit_graph)
+        # self.update_timer.start(2000)
+        self.sound_meter_thread.start() 
 
     def stop_listening(self):
         self.sound_meter_thread.stop()
+        # self.update_timer.stop()
 
     def show_graph(self, times, db_levels):
         self.ShowGraphLabel.plot_graph(times, db_levels)
-            
+
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     MainWindow = QtWidgets.QMainWindow()
