@@ -15,7 +15,7 @@ recording = False
 def errorHandler(exctype, value, traceback):
     print(exctype, value, traceback)
     
-sys.excepthook = errorHandler
+# sys.excepthook = errorHandler
 
 class GraphWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -36,17 +36,24 @@ class GraphWidget(QtWidgets.QWidget):
         self.canvas.draw()
 
 class ADThread(QtCore.QThread):
+    data_fsave = pyqtSignal(list, list, list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.inp = ""
 
     def run(self):
         global ser
         while True:
-            inp = ser.readline().decode('utf-8')
-            print(inp)
+            # self.inp = ser.readline().decode('utf-8').strip()
+            pass
+
+    def send_data(self):
+        global ser
 
 class SoundThread(QtCore.QThread):
     graph_updated = pyqtSignal(list, list)
+    stop_save = pyqtSignal(list, list, list)
 
     def __init__(self, sample_rate=44100, block_size=1024):
         super().__init__()
@@ -63,14 +70,10 @@ class SoundThread(QtCore.QThread):
         return db
 
     def callback(self, indata, frames, timestamp, status):
-        if status:
-            print("Error:", status)
         db_level = self.calculate_db(indata)
-        print(db_level)
         elapsed_time = time.time() - self.start_time
         self.db_levels.append(db_level)
         self.times.append(elapsed_time)
-        # self.pressure_levels.append()
 
     def run(self):
         self.start_time = time.time()
@@ -82,10 +85,11 @@ class SoundThread(QtCore.QThread):
     def stop(self):
         self.running = False
         self.wait()
-        self.emit_graph()
-
-    def emit_graph(self):
         self.graph_updated.emit(list(self.times), list(self.db_levels))
+        self.stop_save.emit(list(self.times), list(self.db_levels), list(self.pressure_levels))
+
+    # def emit_graph(self):
+    #     self.graph_updated.emit(list(self.times), list(self.db_levels))
 
 class Ui_MainWindow(object):
 
@@ -132,9 +136,10 @@ class Ui_MainWindow(object):
         self.FilePath = QtWidgets.QLabel(self.verticalLayoutWidget)
         font = QtGui.QFont()
         font.setFamily("AppleSDGothicNeoB00")
-        font.setPointSize(14)
+        font.setPointSize(10)
+        self.FilePath.setWordWrap(True)
         self.FilePath.setFont(font)
-        self.FilePath.setAlignment(QtCore.Qt.AlignCenter)
+        self.FilePath.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self.FilePath.setObjectName("FilePath")
         self.horizontalLayout_3.addWidget(self.FilePath)
         self.verticalLayout.addLayout(self.horizontalLayout_3)
@@ -234,9 +239,9 @@ class Ui_MainWindow(object):
         font.setFamily("AppleSDGothicNeoB00")
         font.setPointSize(10)
         self.ProgressBar.setFont(font)
-        self.ProgressBar.setProperty("value", 24)
-        self.ProgressBar.setAlignment(QtCore.Qt.AlignCenter)
-        self.ProgressBar.setTextVisible(True)
+        self.ProgressBar.setProperty("value", 0)
+        self.ProgressBar.setRange(0, 1)
+        self.ProgressBar.setTextVisible(False)
         self.ProgressBar.setObjectName("ProgressBar")
         self.verticalLayout_2.addWidget(self.ProgressBar)
         self.line_2 = QtWidgets.QFrame(self.verticalLayoutWidget_2)
@@ -251,7 +256,7 @@ class Ui_MainWindow(object):
 
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
-
+        
         if platform.system() == 'Windows':
             ports = list(serial.tools.list_ports.comports())
             for p in ports:
@@ -264,6 +269,8 @@ class Ui_MainWindow(object):
             print("Unsupported OS")
             sys.exit()
 
+        self.PortDropDown.addItem("COM1")
+
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "ADSync - made by Jooney Han"))
@@ -274,7 +281,6 @@ class Ui_MainWindow(object):
         self.PortLabel.setText(_translate("MainWindow", "포트: "))
         self.SaveButton.setText(_translate("MainWindow", "저장"))
         self.StartRecordLabel.setText(_translate("MainWindow", "녹음 시작:"))
-        self.label.setText(_translate("MainWindow", "저장됨! "))
 
     def getfile(self):
         self.FilePath.setText(QtWidgets.QFileDialog.getExistingDirectory(self.centralwidget, 'Select Directory'))
@@ -301,22 +307,45 @@ class Ui_MainWindow(object):
             self.StartRecordLabel.setText("녹음 시작:")
             recording = False
             self.thread1.terminate()
-            self.stop_listening()
+            self.sound_meter_thread.stop()
 
     def start_listening(self):
+        self.ProgressBar.setRange(0, 0)
         self.sound_meter_thread = SoundThread()
         self.sound_meter_thread.graph_updated.connect(self.show_graph)
+        self.sound_meter_thread.stop_save.connect(self.save_file)
         # self.update_timer = QtCore.QTimer()
         # self.update_timer.timeout.connect(self.sound_meter_thread.emit_graph)
         # self.update_timer.start(2000)
         self.sound_meter_thread.start() 
 
-    def stop_listening(self):
-        self.sound_meter_thread.stop()
-        # self.update_timer.stop()
+    def save_file(self, times, db_levels, pressure_levels):
+        global filename, filepath
+        fn = filename + ".txt"
+        openfile = open(os.path.join(filepath, fn), "w")
+
+        for x in range(len(times)):
+            openfile.write(str(times[x]) + " " + str(db_levels[x]) + "\n")
+
+        openfile.close()
+        self.ProgressBar.setRange(0, 1)
+        self.label.setText("저장 완료! ")
+        self.ftimer = QtCore.QTimer()
+        self.ftimer.timeout.connect(lambda: {self.fade(self.label), self.ftimer.stop()})
+        self.ftimer.start(1000)
 
     def show_graph(self, times, db_levels):
         self.ShowGraphLabel.plot_graph(times, db_levels)
+
+    def fade(self, widget):
+        self.effect = QtWidgets.QGraphicsOpacityEffect()
+        widget.setGraphicsEffect(self.effect)
+        self.animation = QtCore.QPropertyAnimation(self.effect, b"opacity")
+        self.animation.setDuration(1000)
+        self.animation.setStartValue(1)
+        self.animation.setEndValue(0)
+        self.animation.start()
+        self.animation.finished.connect(lambda: {self.label.setText(""), self.effect.deleteLater()})
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
