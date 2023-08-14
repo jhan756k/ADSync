@@ -1,6 +1,6 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 import serial.tools.list_ports
-import serial , time, sys, glob, platform, os
+import serial , time, sys, glob, platform, os, zlib
 from PyQt5.QtCore import pyqtSignal
 import numpy as np
 import sounddevice as sd
@@ -90,6 +90,27 @@ class SoundThread(QtCore.QThread):
 
     # def emit_graph(self):
     #     self.graph_updated.emit(list(self.times), list(self.db_levels))
+
+class SaveThread(QtCore.QThread):
+    complete = pyqtSignal()
+
+    def __init__(self, times, db_levels, pressure_levels, parent=None):
+        super().__init__(parent)
+        self.times = times
+        self.db_levels = db_levels
+        self.pressure_levels = pressure_levels
+
+    def run(self):
+        global filename, filepath
+        fn = filename + ".txt"
+        openfile = open(os.path.join(filepath, fn), "wb")
+        sendtext = ""
+        for x in range(len(self.times)):
+            sendtext += (str(self.times[x]) + " " + str(self.db_levels[x]) + "\n")
+        comp = zlib.compress(sendtext.encode('utf-8'), 9)
+        openfile.write(comp)
+        openfile.close()
+        self.complete.emit()
 
 class Ui_MainWindow(object):
 
@@ -320,19 +341,17 @@ class Ui_MainWindow(object):
         self.sound_meter_thread.start() 
 
     def save_file(self, times, db_levels, pressure_levels):
-        global filename, filepath
-        fn = filename + ".txt"
-        openfile = open(os.path.join(filepath, fn), "w")
-
-        for x in range(len(times)):
-            openfile.write(str(times[x]) + " " + str(db_levels[x]) + "\n")
-
-        openfile.close()
+        self.sthread = SaveThread(times, db_levels, pressure_levels)
+        self.sthread.complete.connect(self.after_save)
+        self.sthread.start()
+        
+    def after_save(self):
         self.ProgressBar.setRange(0, 1)
         self.label.setText("저장 완료! ")
         self.ftimer = QtCore.QTimer()
         self.ftimer.timeout.connect(lambda: {self.fade(self.label), self.ftimer.stop()})
         self.ftimer.start(1000)
+        self.sthread.terminate()
 
     def show_graph(self, times, db_levels):
         self.ShowGraphLabel.plot_graph(times, db_levels)
