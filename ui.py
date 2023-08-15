@@ -15,7 +15,7 @@ recording = False
 def errorHandler(exctype, value, traceback):
     print(exctype, value, traceback)
     
-# sys.excepthook = errorHandler
+sys.excepthook = errorHandler
 
 class GraphWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -325,6 +325,7 @@ class Ui_MainWindow(object):
             self.start_listening()
         else:
             self.RecordButton.setIcon(QtGui.QIcon("./icons/startrecord.png"))
+            self.RecordButton.setDisabled(True)
             self.StartRecordLabel.setText("녹음 시작:")
             recording = False
             self.thread1.terminate()
@@ -352,6 +353,7 @@ class Ui_MainWindow(object):
         self.ftimer.timeout.connect(lambda: {self.fade(self.label), self.ftimer.stop()})
         self.ftimer.start(1000)
         self.sthread.terminate()
+        self.RecordButton.setDisabled(False)
 
     def show_graph(self, times, db_levels):
         self.ShowGraphLabel.plot_graph(times, db_levels)
