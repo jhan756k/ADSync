@@ -11,7 +11,7 @@ def generate_time_db_graph(audio_path, sample_rate=44100, block_size=1024, time_
     audio_data, _ = sf.read(audio_path)
     audio_length = len(audio_data)
     start_time, end_time = time_range
-
+    
     db_levels = []
 
     for i in range(0, audio_length, block_size):
